@@ -1,0 +1,64 @@
+# --- Stage 1: Use UBI Minimal to install dependencies ---
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS builder
+
+# Install necessary dependencies
+RUN microdnf install -y --nodocs \
+    findutils \
+    fuse-overlayfs \
+    wget \
+    tar \
+    gzip \
+    && microdnf clean all
+
+RUN microdnf install -y --nodocs libX11 libXext libSM libICE fontconfig java-17-openjdk
+
+# Install JDK 17.0.8.1
+#RUN wget -O /tmp/jdk-17.0.12_linux-x64_bin.tar.gz https://download.java.net/java/GA/jdk17.0.1/2a2082e5a09d4267845be086888add4f/12/GPL/openjdk-17.0.1_linux-x64_bin.tar.gz \
+#    && mkdir -p /usr/lib/jvm \
+#    && tar -xzf /tmp/openjdk-17.0.8.1.tar.gz -C /usr/lib/jvm \
+#    && rm -f /tmp/openjdk-17.0.8.1.tar.gz
+
+#ENV JAVA_HOME=/usr/lib/jvm/jdk-17.0.8.1
+ENV PATH="$JAVA_HOME/bin:$PATH"
+
+# Install Maven 3.9.5
+ADD apache-maven-3.9.5-bin.tar.gz /tmp/apache-maven-3.9.5-bin.tar.gz
+RUN mkdir -p /usr/share/maven \
+    && tar -xzf /tmp/apache-maven-3.9.5-bin.tar.gz -C /usr/share/maven \
+    && rm -f /tmp/apache-maven-3.9.5-bin.tar.gz
+
+ENV MAVEN_HOME=/usr/share/maven/apache-maven-3.9.5
+ENV PATH="$MAVEN_HOME/bin:$PATH"
+
+# Download and extract LibreOffice AppImage
+ADD libreoffice.AppImage /tmp/libreoffice.AppImage 
+RUN chmod +x /tmp/libreoffice.AppImage \
+    && /tmp/libreoffice.AppImage --appimage-extract \
+    && mv squashfs-root /opt/libreoffice \
+    && rm -f /tmp/libreoffice.AppImage
+
+# Remove unnecessary files from LibreOffice
+RUN rm -rf /opt/libreoffice/{share,readmes,man,help,licenses,uno_packages} 
+#    && find /opt/libreoffice -type f -name "*.so*" ! -name "libreoffice*" -delete
+
+# --- Stage 2: Use UBI Micro for the final minimal image ---
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest
+
+# Set environment variables
+ENV LANG=en_US.UTF-8
+WORKDIR /workspace
+
+# Copy only necessary files from the builder stage
+COPY --from=builder /opt/libreoffice /opt/libreoffice
+COPY --from=builder /usr/lib/jvm /usr/lib/jvm
+COPY --from=builder /usr/share/maven /usr/share/maven
+
+ENV JAVA_HOME=/usr/lib/jvm/jdk-17.0.8.1
+ENV PATH="$JAVA_HOME/bin:$PATH"
+ENV MAVEN_HOME=/usr/share/maven/apache-maven-3.9.5
+ENV PATH="$MAVEN_HOME/bin:$PATH"
+
+ENV TZ Asia/Kolkata
+
+# Set LibreOffice to run in headless mode
+ENTRYPOINT ["/opt/libreoffice/AppRun", "--headless", "--nologo", "--nofirststartwizard", "--convert-to", "pdf"]

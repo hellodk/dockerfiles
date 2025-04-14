@@ -1,0 +1,22 @@
+# Use UBI 9 Minimal as the base image
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+
+# Set environment variables
+ENV LANG=en_US.UTF-8
+WORKDIR /workspace
+
+# Install required dependencies for AppImage
+RUN microdnf install -y --nodocs \
+    fuse-overlayfs \
+    wget \
+    && microdnf clean all
+
+# Download the correct LibreOffice AppImage
+RUN wget -O /usr/local/bin/libreoffice https://appimages.libreitalia.org/LibreOffice-fresh.full-x86_64.AppImage \
+    && chmod +x /usr/local/bin/libreoffice \
+    && /usr/local/bin/libreoffice --appimage-extract \
+    && mv squashfs-root /opt/libreoffice
+
+# Set LibreOffice to run in headless mode
+ENTRYPOINT ["/opt/libreoffice/AppRun", "--headless", "--nologo", "--nofirststartwizard", "--convert-to", "pdf"]
+

@@ -1,0 +1,58 @@
+# --- Stage 1: Builder ---
+FROM registry.access.redhat.com/ubi9/ubi as builder
+
+ENV SUBSCRIPTION_MANAGER_IN_CONTAINER=1
+ENV MAVEN_VERSION=3.9.5
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ENV PATH=$JAVA_HOME/bin:/opt/maven/bin:$PATH
+ENV TZ=Asia/Kolkata
+
+RUN dnf install -y --setopt=tsflags=nodocs \
+        java-17-openjdk java-17-openjdk-devel \
+        libreoffice-core libreoffice-writer \
+        tzdata curl unzip && \
+    dnf remove -y subscription-manager && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf /var/log/dnf.*
+
+# Set timezone
+RUN ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime && \
+    echo "Asia/Kolkata" > /etc/timezone
+
+# Install Maven manually
+RUN curl -fsSL https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.zip -o /tmp/maven.zip && \
+    unzip /tmp/maven.zip -d /opt && \
+    mv /opt/apache-maven-${MAVEN_VERSION} /opt/maven && \
+    rm -f /tmp/maven.zip
+
+# Add conversion script
+COPY convert.sh /convert.sh
+RUN chmod +x /convert.sh
+
+
+# --- Stage 2: Runtime ---
+FROM registry.access.redhat.com/ubi9/ubi-minimal
+
+ENV TZ=Asia/Kolkata
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ENV PATH=$JAVA_HOME/bin:/opt/maven/bin:$PATH
+
+# Install minimal required runtime libs
+RUN microdnf install -y \
+        java-17-openjdk-headless \
+        tzdata && \
+    microdnf clean all
+
+# Copy from builder stage
+COPY --from=builder /usr/lib/libreoffice /usr/lib/libreoffice
+COPY --from=builder /opt/maven /opt/maven
+COPY --from=builder /usr/lib/jvm/java-17-openjdk /usr/lib/jvm/java-17-openjdk
+COPY --from=builder /etc/localtime /etc/localtime
+COPY --from=builder /etc/timezone /etc/timezone
+COPY --from=builder /convert.sh /usr/local/bin/convert.sh
+
+RUN chmod +x /usr/local/bin/convert.sh
+
+WORKDIR /convert
+ENTRYPOINT ["/usr/local/bin/convert.sh"]
+

@@ -1,0 +1,33 @@
+# --- Stage 1: Use UBI Minimal to install dependencies ---
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS builder
+
+# Install necessary dependencies
+RUN microdnf install -y --nodocs \
+    findutils \
+    fuse-overlayfs \
+    wget \
+    && microdnf clean all
+
+# Download and extract LibreOffice AppImage
+RUN wget -O /tmp/libreoffice.AppImage https://appimages.libreitalia.org/LibreOffice-fresh.full-x86_64.AppImage \
+    && chmod +x /tmp/libreoffice.AppImage \
+    && /tmp/libreoffice.AppImage --appimage-extract \
+    && mv squashfs-root /opt/libreoffice \
+    && rm -f /tmp/libreoffice.AppImage
+
+# Remove unnecessary files from LibreOffice
+RUN rm -rf /opt/libreoffice/{share,readmes,man,help,licenses,uno_packages} \
+    && find /opt/libreoffice -type f -name "*.so*" ! -name "libreoffice*" -delete
+
+# --- Stage 2: Use UBI Micro for the final minimal image ---
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest
+
+# Set environment variables
+ENV LANG=en_US.UTF-8
+WORKDIR /workspace
+
+# Copy only necessary files from the builder stage
+COPY --from=builder /opt/libreoffice /opt/libreoffice
+
+# Set LibreOffice to run in headless mode
+ENTRYPOINT ["/opt/libreoffice/AppRun", "--headless", "--nologo", "--nofirststartwizard", "--convert-to", "pdf"]

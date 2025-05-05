@@ -1,0 +1,48 @@
+# ---- Stage 1: Build Environment ----
+FROM redhat/ubi9-minimal AS builder
+
+ENV TZ=Asia/Kolkata
+WORKDIR /workspace
+
+# Copy required files
+COPY files/jdk-17.0.12_linux-x64_bin.tar.gz \
+     files/apache-maven-3.9.5-bin.tar.gz \
+     files/LibreOffice_7.6.7.2_Linux_x86-64_rpm.tar.gz \
+     files/lohit-fonts.tar.gz .
+
+# Install system dependencies and extract required tools
+RUN microdnf update -y && \
+    microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+    tar gzip libXinerama nss cairo libxslt cups libX11 libX11-xcb fontconfig && \
+    mkdir -p /usr/share/fonts && \
+    tar -xzf lohit-fonts.tar.gz -C /usr/share/fonts && \
+    tar -xzf jdk-17.0.12_linux-x64_bin.tar.gz -C /opt/java && \
+    tar -xzf apache-maven-3.9.5-bin.tar.gz -C /opt/maven && \
+    tar -xvf LibreOffice_7.6.7.2_Linux_x86-64_rpm.tar.gz && \
+    cd LibreOffice_7.6.7.2_Linux_x86-64_rpm/RPMS && \
+    rpm -iv --excludedocs *.rpm && \
+    ln -s /opt/libreoffice7.6/program/soffice /usr/local/bin/libreoffice && \
+    microdnf clean all && \
+    rm -rf *.tar.gz LibreOffice_7.6.7.2_Linux_x86-64_rpm
+
+# ---- Stage 2: Slim Runtime Image ----
+FROM registry.access.redhat.com/ubi9/ubi-micro
+
+ENV TZ=Asia/Kolkata
+ENV LANG=en_US.UTF-8
+
+# Java & Maven
+ENV JAVA_HOME=/opt/java/jdk-17.0.12
+ENV MAVEN_HOME=/opt/maven/apache-maven-3.9.5
+ENV PATH=$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH
+
+# Copy necessary software only
+COPY --from=builder /opt/java /opt/java
+COPY --from=builder /opt/maven /opt/maven
+COPY --from=builder /opt/libreoffice7.6 /opt/libreoffice7.6
+COPY --from=builder /usr/local/bin/libreoffice /usr/local/bin/libreoffice
+COPY --from=builder /usr/share/fonts /usr/share/fonts
+COPY --from=builder /etc/fonts /etc/fonts
+
+WORKDIR /workspace
+CMD ["/bin/bash"]

@@ -1,0 +1,92 @@
+#!/bin/sh
+# es - minimal Elasticsearch client.
+#
+# Elasticsearch ships no standalone CLI. This wraps the REST API with curl+jq,
+# which is all you need for interactive triage.
+#
+#   es hosts                       list cluster health per node
+#   es cat <index>                 list indices
+#   es get <index> [n]             search an index (default 10 hits)
+#   es get <index> '<json query>'   search with a query DSL body
+#   es count <index>               document count
+#   es mapping <index>             field mappings
+#   es alias <index> <alias>       add an alias
+#
+# Override the target with ES_HOST / ES_PORT, or pass a full URL as ES_HOST.
+set -eu
+
+ES_HOST="${ES_HOST:-localhost}"
+ES_PORT="${ES_PORT:-9200}"
+ES_AUTH="${ES_AUTH:-}"          # user:pass
+ES_INSECURE="${ES_INSECURE:-0}"
+
+case "${ES_HOST}" in
+  http://*|https://*) BASE="${ES_HOST%/}" ;;
+  *)                   BASE="http://${ES_HOST}:${ES_PORT}" ;;
+esac
+
+auth_args=""
+[ -n "$ES_AUTH" ] && auth_args="-u ${ES_AUTH}"
+[ "$ES_INSECURE" = "1" ] && auth_args="${auth_args} -k"
+
+call() {  # call <method> <path> [body]
+  _m="$1"; _p="$2"; _b="${3:-}"
+  if [ -n "$_b" ]; then
+    # shellcheck disable=SC2086
+    curl -sS $auth_args -X "$_m" "${BASE}${_p}" \
+         -H 'Content-Type: application/json' -d "$_b"
+  else
+    # shellcheck disable=SC2086
+    curl -sS $auth_args "${BASE}${_p}"
+  fi
+}
+
+cmd="${1:-hosts}"; shift || true
+
+case "$cmd" in
+  hosts)
+    call GET "/_nodes/_all/os?pretty" | jq '.nodes[] | {name, heap, version: .versions[0]}'
+    ;;
+  health)
+    call GET "/_cluster/health?pretty"
+    ;;
+  cat)
+    idx="${1:?usage: es cat <index>}"
+    call GET "/_cat/indices/${idx}?v&s=index"
+    ;;
+  get)
+    idx="${1:?usage: es get <index> [n|'<json query>']}"
+    arg="${2:-10}"
+    case "$arg" in
+      \#*|\{*|\[*)
+        # a query DSL body was supplied
+        call GET "/${idx}/_search?pretty" "$arg"
+        ;;
+      *)  # treat as size
+        call GET "/${idx}/_search?size=${arg}&pretty" \
+          '{"query":{"match_all":{}}}'
+        ;;
+    esac
+    ;;
+  count)
+    idx="${1:?usage: es count <index>}"
+    call GET "/${idx}/_count?pretty" | jq '.count'
+    ;;
+  mapping)
+    idx="${1:?usage: es mapping <index>}"
+    call GET "/${idx}/_mapping?pretty"
+    ;;
+  alias)
+    idx="${1:?usage: es alias <index> <alias>}"
+    al="${2:?usage: es alias <index> <alias>}"
+    call POST "/_aliases" "{\"actions\":[{\"add\":{\"index\":\"${idx}\",\"alias\":\"${al}\"}}]}"
+    ;;
+  raw)
+    # escape hatch: es raw GET /_cat/nodes
+    call "${1:?usage: es raw <METHOD> <path>}" "${2:?usage: es raw <METHOD> <path>}" "${3:-}"
+    ;;
+  *)
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac

@@ -1,0 +1,9 @@
+FROM rust:1-alpine3.24
+RUN addgroup -S -g 65532 app \
+ && adduser  -S -u 65532 -G app -h /app -s /sbin/nologin app \
+ && mkdir -p /app/.cargo && chown -R app:app /app
+ENV CARGO_HOME=/app/.cargo
+WORKDIR /app
+USER app
+ENTRYPOINT []
+CMD []

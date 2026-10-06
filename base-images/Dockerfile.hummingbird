@@ -1,0 +1,5 @@
+FROM quay.io/hummingbird/openjdk:21.0.12
+WORKDIR /app
+EXPOSE 9966
+ENTRYPOINT []
+CMD []

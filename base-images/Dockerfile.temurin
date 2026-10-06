@@ -1,0 +1,10 @@
+FROM eclipse-temurin:21.0.12.1_1-jdk-alpine
+RUN apk upgrade --no-cache && rm -rf /var/cache/apk/*
+RUN addgroup -S -g 65532 app \
+ && adduser  -S -u 65532 -G app -h /app -s /sbin/nologin app \
+ && mkdir -p /app && chown app:app /app
+WORKDIR /app
+USER app
+EXPOSE 9966
+ENTRYPOINT []
+CMD []

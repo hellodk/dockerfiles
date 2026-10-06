@@ -1,0 +1,60 @@
+# Use UBI Minimal for a lightweight container
+FROM redhat/ubi9-minimal AS builder
+
+# Setup the Environment variables
+ENV TZ=Asia/Kolkata
+
+WORKDIR /workspace
+
+COPY files/fonts.tar.gz files/jdk-17.0.12_linux-x64_bin.tar.gz files/apache-maven-3.9.5-bin.tar.gz files/LibreOffice_7.6.7.2_Linux_x86-64_rpm.tar.gz /workspace
+
+RUN microdnf update -y && microdnf install -y --nodocs --setopt=install_weak_deps=0 tar gzip libXinerama nss cairo libxslt cups libX11 libX11-xcb \
+    && tar xvf LibreOffice_7.6.7.2_Linux_x86-64_rpm.tar.gz \
+    && tar xvf fonts.tar.gz -C /usr/share/ \
+    && cd LibreOffice_7.6.7.2_Linux_x86-64_rpm/RPMS/ \
+    && rpm -iv --excludedocs *.rpm \
+    && ln -s /opt/libreoffice7.6/program/soffice /usr/local/bin/libreoffice \
+    && rm -rf LibreOffice_7.6.7.2_Linux_x86-64_rpm LibreOffice_7.6.7.2_Linux_x86-64_rpm.tar.gz fonts.tar.gz\
+    && microdnf clean all
+
+
+# Install Java
+RUN mkdir /opt/java \
+    && tar -xvzf /workspace/jdk-17.0.12_linux-x64_bin.tar.gz -C /opt/java \
+    && rm -f /workspace/jdk-17.0.12_linux-x64_bin.tar.gz
+
+# Install Maven 3.9.5
+RUN mkdir -p /opt/maven \
+    && tar -xzf /workspace/apache-maven-3.9.5-bin.tar.gz -C /opt/maven \
+    && rm -f /workspace/apache-maven-3.9.5-bin.tar.gz
+
+# Set working directory
+WORKDIR /workspace
+CMD ["/bin/bash"]
+
+# Final image with only necessary files (optional multi-stage build)
+FROM registry.access.redhat.com/ubi9/ubi-micro
+
+# Copy only necessary files from the builder stage
+COPY --from=builder /opt/libreoffice7.6 /opt/libreoffice7.6
+COPY --from=builder /opt/maven /opt/maven
+COPY --from=builder /opt/java /opt/java
+COPY --from=builder /usr/lib64 /usr/lib64
+COPY --from=builder /usr/bin/ /usr/bin/
+COPY --from=builder /usr/share/fonts /usr/share/fonts
+RUN ln -s /opt/libreoffice7.6/program/soffice /usr/local/bin/libreoffice
+
+# Copy fontconfig configurations and fonts
+COPY --from=builder /etc/fonts /etc/fonts
+# Set working directory and entrypoint
+
+ENV MAVEN_HOME=/opt/maven/apache-maven-3.9.5
+ENV TZ=Asia/Kolkata
+ENV LANG=en_US.UTF-8
+
+ENV JAVA_VERSION 17.0.12
+ENV JAVA_HOME /opt/java/jdk-17.0.12
+ENV PATH $MAVEN_HOME/bin:$JAVA_HOME/bin:$PATH
+
+WORKDIR /workspace
+CMD ["/bin/bash"]

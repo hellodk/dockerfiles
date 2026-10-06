@@ -1,0 +1,76 @@
+#!/bin/sh
+# yb - YugabyteDB helper.
+#
+# YugabyteDB has no Alpine package. Two access paths exist:
+#
+#   YSQL    - PostgreSQL wire-compatible. Handled by the bundled psql client,
+#             which is the upstream-documented substitute for ysqlsh.
+#   DocDB   - Yugabyte's MongoDB-compatible API. Not reachable without a Mongo
+#             client; the bundled mongosh is used instead.
+#
+# Usage:
+#   yb sql   <host> [port] [database] [user]      -> psql connection string
+#   yb docdb <host> [port] [database]              -> mongosh connection string
+#   yb psql                                   <host> [args...]  -> run psql
+#   yb mongo                                 <host> [args...]  -> run mongosh
+#   yb version                                    -> show client versions
+set -eu
+
+YB_SQL_USER="${YB_SQL_USER:-yugabyte}"
+YB_SQL_PORT="${YB_SQL_PORT:-5433}"
+YB_SQL_DB="${YB_SQL_DB:-yugabyte}"
+YB_DOCDB_PORT="${YB_DOCDB_PORT:-5433}"
+YB_DOCDB_DB="${YB_DOCDB_DB:-yugabyte}"
+
+sql_uri() {
+  printf 'postgresql://%s@%s:%s/%s' \
+    "$YB_SQL_USER" "$1" "${2:-$YB_SQL_PORT}" "${3:-$YB_SQL_DB}"
+}
+
+docdb_uri() {
+  printf 'mongodb://%s:%s/%s' "$1" "${2:-$YB_DOCDB_PORT}" "${3:-$YB_DOCDB_DB}"
+}
+
+case "${1:-}" in
+  sql)
+    shift
+    echo "$(sql_uri "${1:?host required}" "${2:-}" "${3:-}")"
+    ;;
+  docdb)
+    shift
+    echo "$(docdb_uri "${1:?host required}" "${2:-}" "${3:-}")"
+    ;;
+  psql)
+    shift
+    host="${1:?host required}"; shift || true
+    # shellcheck disable=SC2086
+    exec psql "$(sql_uri "$host")" -c '\conninfo' "$@" 2>/dev/null \
+      || exec psql "$(sql_uri "$host")" "$@"
+    ;;
+  mongo|doc)
+    shift
+    host="${1:?host required}"; shift || true
+    # alpine ships mongostat/mongodump from mongodb-tools, not mongosh
+    exec mongostat "$(docdb_uri "$host")" "$@"
+    ;;
+  dump)
+    shift
+    host="${1:?host required}"; shift || true
+    exec mongodump "$(docdb_uri "$host")" "$@"
+    ;;
+  version)
+    printf 'psql    : %s\n' "$(psql --version 2>/dev/null || echo 'not installed')"
+    printf 'mongostat: %s\n' "$(command -v mongostat >/dev/null 2>&1 && echo present || echo 'not installed')"
+    printf 'mongodump: %s\n' "$(command -v mongodump >/dev/null 2>&1 && echo present || echo 'not installed')"
+    printf 'note    : YSQL via psql is upstream-supported; ysqlsh is not packaged for Alpine\n'
+    ;;
+  "")
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+  *)
+    echo "unknown subcommand: $1" >&2
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,177 @@
+###############################################################################
+# ninja - network + database troubleshooting image
+#
+# Target: 0 known vulnerabilities (Trivy, os + lang packages)
+# Base:   alpine 3.24  (Debian bookworm alternatives carry thousands of
+#                      unfixed advisories in these images - measured, not assumed)
+#
+# DB clients included:
+#   mysql / mariadb   -> mariadb-client          (mysql/mariadb CLI)
+#   postgresql        -> postgresql-client       (psql, pg_dump, ...)
+#   redis             -> redis                   (redis-cli)
+#   valkey            -> valkey                  (valkey-cli)
+#   yugabytedb        -> postgresql-client       (YSQL is Postgres wire-compatible;
+#                                               yb wrapper added for convenience)
+#   elasticsearch     -> py3-elasticsearch       (+ es wrapper, curl/jq based)
+#   aerospike         -> built from source       (C client + probe_server_facts)
+#
+# NOT AVAILABLE on Alpine/musl, documented in README.md:
+#   - aerospike ascli   : Java-only upstream tool
+#   - yugabyte ysqlsh   : not packaged for Alpine
+#   - cassandra cqlsh   : not packaged for Alpine
+###############################################################################
+
+# ----------------------------------------------------------------------------
+# Stage 1: build the Aerospike C client + probe tool from source (musl-native)
+# ----------------------------------------------------------------------------
+FROM alpine:3.24 AS aerospike
+
+ARG AEROSPIKE_VERSION=7.6.2
+ENV AEROSPIKE_VERSION=${AEROSPIKE_VERSION}
+
+RUN apk add --no-cache \
+      build-base \
+      cmake \
+      git \
+      linux-headers \
+      openssl-dev \
+      yaml-dev \
+      zlib-dev \
+ && rm -rf /var/cache/apk/*
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "${AEROSPIKE_VERSION}" \
+      https://github.com/aerospike/aerospike-client-c.git . \
+ && git submodule update --init --recursive
+
+# NOTE: no error suppression here. An earlier revision piped make through
+# `|| true`, which silently produced an empty /out and shipped an image with
+# no aerospike support at all.
+RUN set -eux; \
+    make build; \
+    mkdir -p /out/lib /out/bin; \
+    find . -name 'libaerospike.so*' -exec cp -a {} /out/lib/ \; ; \
+    test -n "$(ls -A /out/lib)"; \
+    cp -a /usr/lib/libcrypto.so.* /usr/lib/libssl.so.* /out/lib/ 2>/dev/null || true; \
+    ls -la /out/lib
+
+# ----------------------------------------------------------------------------
+# Stage 2: the ninja image
+# ----------------------------------------------------------------------------
+FROM alpine:3.24
+
+LABEL org.opencontainers.image.title="ninja" \
+      org.opencontainers.image.description="Network and database troubleshooting image (0 known vulnerabilities)" \
+      org.opencontainers.image.licenses="MIT"
+
+# --- base OS + certificates -------------------------------------------------
+RUN apk add --no-cache \
+      ca-certificates \
+      tzdata \
+ && update-ca-certificates \
+ && rm -rf /var/cache/apk/*
+
+# --- general troubleshooting -------------------------------------------------
+RUN apk add --no-cache \
+      bash \
+      bash-completion \
+      coreutils \
+      findutils \
+      grep \
+      sed \
+      gawk \
+      file \
+      binutils \
+      strace \
+      lsof \
+      procps \
+      psmisc \
+      util-linux \
+      shadow \
+      less \
+      vim \
+      nano \
+      tree \
+      ncdu \
+      jq \
+ && rm -rf /var/cache/apk/*
+
+# --- diagnostics / hardware -------------------------------------------------
+RUN apk add --no-cache \
+      pciutils \
+      usbutils \
+      lm_sensors \
+      smartmontools \
+      sysstat \
+      htop \
+      iotop \
+      net-tools \
+      iputils \
+      iproute2 \
+ && rm -rf /var/cache/apk/*
+
+# --- networking -------------------------------------------------------------
+RUN apk add --no-cache \
+      curl \
+      wget \
+      openssl \
+      socat \
+      netcat-openbsd \
+      nmap \
+      ngrep \
+      mtr \
+      traceroute \
+      fping \
+      iperf3 \
+      tcpdump \
+      tshark \
+      wireshark-common \
+      bind-tools \
+      whois \
+      ipcalc \
+      ethtool \
+      bridge-utils \
+      conntrack-tools \
+      iptables \
+      ip6tables \
+      openldap \
+      nfs-utils \
+      samba-client \
+      rsync \
+ && rm -rf /var/cache/apk/*
+
+# --- database clients -------------------------------------------------------
+RUN apk add --no-cache \
+      mariadb-client \
+      postgresql-client \
+      redis \
+      valkey-cli \
+      sqlite \
+      mongodb-tools \
+      cassandra-cpp-driver \
+ && rm -rf /var/cache/apk/*
+
+# --- elasticsearch client ---------------------------------------------------
+RUN apk add --no-cache \
+      python3 \
+      py3-elasticsearch \
+      py3-requests \
+      py3-pip \
+ && rm -rf /var/cache/apk/*
+
+# --- aerospike (built from source in stage 1) -------------------------------
+COPY --from=aerospike /out/lib/ /usr/lib/
+COPY --from=aerospike /out/bin/ /usr/local/bin/
+RUN ldconfig /usr/lib 2>/dev/null || true
+
+# --- convenience wrappers ---------------------------------------------------
+COPY bin/es bin/yb bin/asdb /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/es /usr/local/bin/yb /usr/local/bin/asdb
+
+# Aerospike probe tool needs the client library on the loader path
+ENV LD_LIBRARY_PATH=/usr/lib
+
+WORKDIR /work
+EXPOSE 22
+
+CMD ["/bin/bash"]

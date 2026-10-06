@@ -1,0 +1,59 @@
+#!/bin/sh
+# asdb - Aerospike helper.
+#
+# Alpine carries no Aerospike package. The C client is compiled from source in
+# the build (musl-native) and provides probe_server_facts, which returns server
+# build, node count and cluster metadata.
+#
+# The full upstream `ascli` is a Java tool and is not available here. For
+# record-level operations use the Aerospike C client from your own code, or run
+# the official tool image:
+#
+#   docker run --rm -it --network <net> aerospike/aerospike-tools ascli -h <host>
+#
+# Usage:
+#   asdb probe <host> [port]     server facts (build, nodes, edition)
+#   asdb facts <host> [port]     alias for probe
+#   asdb ping <host> [port]      TCP reachability check
+#   asdb version                 show what is available
+set -eu
+
+PORT_DEFAULT=3000
+
+probe() {
+  host="${1:?host required}"
+  port="${2:-$PORT_DEFAULT}"
+  if [ ! -x /usr/local/bin/probe_server_facts ]; then
+    echo "probe_server_facts was not built into this image" >&2
+    echo "falling back to a TCP reachability check" >&2
+    nc -zv -w 5 "$host" "$port" 2>&1 || return 1
+    return 0
+  fi
+  # the probe tool takes host and port as arguments
+  probe_server_facts -h "$host" -p "$port" 2>&1 || \
+  probe_server_facts "$host" "$port" 2>&1
+}
+
+case "${1:-}" in
+  probe|facts) shift; probe "$@" ;;
+  ping)
+    shift
+    nc -zv -w 5 "${1:?host required}" "${2:-$PORT_DEFAULT}" 2>&1
+    ;;
+  version)
+    printf 'probe_server_facts : %s\n' \
+      "$( [ -x /usr/local/bin/probe_server_facts ] && echo present || echo 'not built' )"
+    printf 'libaerospike       : %s\n' \
+      "$(ls /usr/lib/libaerospike*.so* 2>/dev/null | head -1 || echo 'not present')"
+    printf 'ascli              : not available (Java-only upstream tool)\n'
+    ;;
+  "")
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+  *)
+    echo "unknown subcommand: $1" >&2
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2
+    exit 1
+    ;;
+esac

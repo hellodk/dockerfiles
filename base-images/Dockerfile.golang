@@ -1,4 +1,5 @@
 FROM golang:1.26-alpine3.24
+RUN apk upgrade --no-cache && rm -rf /var/cache/apk/*
 RUN addgroup -S -g 65532 app \
  && adduser  -S -u 65532 -G app -h /app -s /sbin/nologin app \
  && mkdir -p /app/go /app/.cache/go && chown -R app:app /app

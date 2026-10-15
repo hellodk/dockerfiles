@@ -1,0 +1,95 @@
+# Secure Go-on-scratch runner with tini init.
+#
+# Build (context must hold go.mod and the main package):
+#   docker build --pull --no-cache -f Dockerfile.golang-scratch -t myapp \
+#     --build-arg VERSION=1.2.3 --build-arg REVISION=$(git rev-parse --short HEAD) .
+# Run (read-only rootfs, no-new-privileges is the intended posture):
+#   docker run --rm --read-only --tmpfs /tmp --security-opt no-new-privileges myapp
+#
+# Design decisions — each verified, none assumed:
+#  1. Builder floats on golang:1.26-alpine3.24 ON PURPOSE. Go stdlib CVEs are
+#     fixed by toolchain bumps, so `--pull` rebuilds always take the newest
+#     patch. Pinning the builder would pin the vulnerabilities with it.
+#  2. CGO_ENABLED=0, -trimpath, -buildvcs=false: fully static binary,
+#     reproducible build, no VCS metadata baked in. -s -w strips symbol/DWARF
+#     tables (panic traces still resolve via pclntab).
+#  3. TARGETARCH flows into GOARCH: the same file builds correct binaries
+#     under `docker build --platform` instead of silently shipping amd64.
+#  4. tini-static, NOT tini: the dynamic binary needs musl, which scratch
+#     does not have. tini-static is fully static (no dynamic section) and was
+#     verified to run on scratch. tini is PID 1 via exec-form ENTRYPOINT, so it
+#     forwards SIGTERM/SIGINT (fast `docker stop`, no 10s SIGKILL wait) and
+#     reaps zombies. Shell-form ENTRYPOINT would not even parse — scratch has
+#     no shell, so exec form is mandatory, not stylistic.
+#  5. Non-root twice over: numeric USER 65532:65532 (works with or without
+#     passwd files) PLUS minimal /etc/passwd + /etc/group copied in, so the
+#     UID resolves to `appuser` for auditing and Go's os/user lookups, and
+#     $HOME resolves to /app. passwd home field does real work here.
+#  6. CA certificates included: without roots every HTTPS dial fails, and Go
+#     verifies against the system bundle. Roots are data, not code.
+#  7. Timezone deliberately omitted: Go defaults to UTC and tzdata only pays
+#     off for time.LoadLocation callers. Opt-in line below if needed.
+#  8. Writable surface: /tmp (1777) exists for GOTMPDIR/GOCACHE; everything
+#     else is root-owned. Binary lands 0555 owned by appuser. Run --read-only
+#     with a tmpfs on /tmp in production.
+#  9. No HEALTHCHECK baked in: scratch has no shell/curl, so the probe must be
+#     an app-owned subcommand. Template below.
+#  10. Trivy sees zero OS packages (there is no OS) and flags only the Go
+#      stdlib version baked in at build time — which point 1 keeps current.
+#
+# Pair with a .dockerignore that excludes everything except go.mod, go.sum
+# and sources, or COPY . . will bake secrets into the builder layer history.
+
+ARG GO_VERSION=1.26-alpine3.24
+ARG ALPINE_VERSION=3.24
+ARG APP_UID=65532
+ARG VERSION=dev
+ARG REVISION=unknown
+
+# --- builder: compile the static binary (arch-aware) ---
+FROM golang:${GO_VERSION} AS build
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath -buildvcs=false \
+    -ldflags="-s -w" \
+    -o /out/app .
+
+# --- rootfs: tini + trust roots + identity + scratch tmp ---
+FROM alpine:${ALPINE_VERSION} AS rootfs
+ARG APP_UID
+RUN apk add --no-cache tini-static ca-certificates \
+ && rm -rf /var/cache/apk/* \
+ && mkdir -p /rootfs/etc/ssl/certs /rootfs/app /rootfs/tmp \
+ && chmod 1777 /rootfs/tmp \
+ && cp /sbin/tini-static /rootfs/tini \
+ && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ \
+ && printf 'root:x:0:0:root:/nonexistent:/sbin/nologin\nappuser:x:%s:%s:app:/app:/sbin/nologin\n' "${APP_UID}" "${APP_UID}" > /rootfs/etc/passwd \
+ && printf 'root:x:0:\nappuser:x:%s:\n' "${APP_UID}" > /rootfs/etc/group
+# tzdata opt-in (only if the app calls time.LoadLocation):
+# RUN mkdir -p /rootfs/usr/share/zoneinfo \
+#  && cp -r /usr/share/zoneinfo/UTC /usr/share/zoneinfo/Etc /rootfs/usr/share/zoneinfo/
+
+# --- final: scratch. Nothing here but the app and its trust roots. ---
+FROM scratch
+ARG APP_UID
+ARG VERSION
+ARG REVISION
+LABEL org.opencontainers.image.title="golang-scratch-app" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.base.name="scratch"
+ENV TZ=UTC GOTMPDIR=/tmp GOCACHE=/tmp
+COPY --from=rootfs /rootfs/ /
+COPY --from=build --chown=${APP_UID}:${APP_UID} --chmod=555 /out/app /app/app
+WORKDIR /app
+USER ${APP_UID}:${APP_UID}
+ENTRYPOINT ["/tini", "--"]
+CMD ["/app/app"]
+
+# App-owned health probe template (needs a `healthcheck` subcommand in the binary):
+# HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+#   CMD ["/app/app", "healthcheck"]

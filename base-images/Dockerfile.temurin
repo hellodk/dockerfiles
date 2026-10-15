@@ -1,5 +1,8 @@
 FROM eclipse-temurin:21.0.12.1_1-jdk-alpine
-RUN apk upgrade --no-cache && rm -rf /var/cache/apk/*
+# CVE-2025-69644: objdump DoS in binutils < 2.46. Alpine 3.24 ships
+# binutils 2.45.1-r1 with no fixed build available, and nothing in this
+# image depends on it, so remove it. javac/java verified working without it.
+RUN apk upgrade --no-cache && apk del --no-cache binutils && rm -rf /var/cache/apk/*
 RUN addgroup -S -g 65532 app \
  && adduser  -S -u 65532 -G app -h /app -s /sbin/nologin app \
  && mkdir -p /app && chown app:app /app
